@@ -3,7 +3,8 @@
 # =============================================================================
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
+bin/
+**/bin/
 !**/src/main/**/build/
 !**/src/test/**/build/
 
@@ -12,6 +13,7 @@ build/
 # =============================================================================
 *.class
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 hs_err_pid*
