@@ -1,229 +1,227 @@
-# tech-challenge-app (Aplicação Principal no Kubernetes)
+# tech-challenge-app
 
-Sistema de gestão de oficina mecânica desenvolvido como parte do **Tech Challenge — Fase 3 da FIAP (Pós-Tech Software Architecture)**.
+Aplicação principal do **Tech Challenge — Fase 3**.
 
-Este repositório contém a aplicação principal em **Spring Boot (Java 21)**, seus manifestos Kubernetes para deploy no **Amazon EKS**, sua pipeline de CI/CD automatizada via **GitHub Actions** e os mecanismos de segurança e observabilidade.
+Implementa as regras de negócio do sistema de gestão de uma oficina mecânica em **Spring Boot (Java 21)**, executada como workload containerizado no **Amazon EKS**, com autenticação stateless via JWT e banco de dados relacional gerenciado no Amazon RDS PostgreSQL.
 
 ---
 
-## 🏗️ Visão Geral da Arquitetura
+## Tecnologias
 
-O ecossistema completo é composto por **4 repositórios segregados**:
+- Java 21 (Amazon Corretto)
+- Spring Boot 4.0.5 (Spring MVC, Spring Data JPA, Spring Security, Spring Actuator)
+- PostgreSQL 16 / Flyway (13 migrations, schema `oficina`)
+- JWT — JJWT (`io.jsonwebtoken:jjwt`), assinatura HMAC-SHA256
+- SpringDoc OpenAPI 3 (Swagger UI)
+- Docker — multi-stage build (`linux/amd64`)
+- Kubernetes 1.36 / Amazon EKS
+- GitHub Actions (CI/CD)
 
-1. `fiap-fase3-infraestrutura`: Terraform provisionando VPC, subnets, ECR e cluster Amazon EKS.
-2. `tech-challenge-infra-db`: Terraform provisionando o banco de dados gerenciado Amazon RDS PostgreSQL 16.
-3. `tech-challenge-serverless`: AWS SAM provisionando a Lambda de autenticação por CPF e o Amazon API Gateway.
-4. `tech-challenge-app` **(Este Repositório)**: Aplicação principal com as regras de negócio da oficina rodando em contêineres no EKS.
+---
+
+## Estrutura do Repositório
 
 ```
-                                  ┌───────────────────────────────┐
-                                  │      Amazon API Gateway       │
-                                  └───────────────┬───────────────┘
-                                                  │
-                         ┌────────────────────────┴────────────────────────┐
-                         │                                                 │
-                   POST /auth                                        /{proxy+}
-                         ▼                                                 ▼
-        ┌───────────────────────────────────┐             ┌───────────────────────────────────┐
-        │       AWS Lambda (Auth CPF)       │             │   AWS Network Load Balancer       │
-        │   - Valida CPF do cliente         │             │   - Service Kubernetes (Porta 80) │
-        │   - Gera token JWT assinado       │             └─────────────────┬─────────────────┘
-        └─────────────────┬─────────────────┘                               │
-                          │                                                 │
-                          │                                                 ▼
-                          │                              ┌─────────────────────────────────────┐
-                          │                              │  Amazon EKS (Namespace: challenge) │
-                          │                              │                                     │
-                          │                              │   ┌─────────────────────────────┐   │
-                          │                              │   │  Pods Spring Boot (2 a 10)  │   │
-                          │                              │   │  - Validação JWT            │   │
-                          │                              │   │  - Regras de negócio OS/Peça│   │
-                          │                              │   │  - Actuator Probes/Métricas │   │
-                          │                              │   │  - Migrations Flyway        │   │
-                          │                              │   └──────────────┬──────────────┘   │
-                          │                              │                  │                  │
-                          │                              │       HPA (CPU 70% / Mem 80%)       │
-                          │                              └──────────────────┼──────────────────┘
-                          │                                                 │
-                          ▼                                                 ▼
-        ┌──────────────────────────────────────────────────────────────────────────────────────┐
-        │                         Amazon RDS PostgreSQL 16 (Schema: oficina)                    │
-        └──────────────────────────────────────────────────────────────────────────────────────┘
+.github/workflows/
+├── pr.yml          CI: testes unitários, cobertura JaCoCo e build check da imagem Docker
+└── deploy.yml      CD: build, push ECR e deploy no EKS via kubectl
+app/
+├── src/main/java/com/fiap/techchallenge/
+│   ├── cliente/           domínio e endpoints de cliente
+│   ├── veiculo/           domínio e endpoints de veículo
+│   ├── ordemservico/      domínio e endpoints de ordem de serviço
+│   ├── peca/              domínio e endpoints de peça
+│   └── security/          filtro JWT, configuração Spring Security
+├── src/main/resources/
+│   ├── application.properties    configuração e variáveis de ambiente
+│   ├── logback-spring.xml        logs JSON em produção, colorido em dev
+│   └── db/migration/             migrations Flyway (V1 a V13)
+├── src/test/                     testes unitários e de integração (Testcontainers)
+├── build.gradle                  dependências, JaCoCo (mínimo 80%) e SonarQube
+└── Dockerfile                    multi-stage build para linux/amd64
+k8s/
+├── configmap.yaml                variáveis não-sensíveis de configuração
+├── deployment.yaml               Deployment (2 réplicas, RollingUpdate, probes, non-root)
+├── service.yaml                  Service LoadBalancer — AWS NLB, porta 80 → 8080
+├── hpa.yaml                      HPA: 2 a 10 réplicas (CPU 70%, memória 80%)
+└── pod-disruption-budget.yaml    PDB: minAvailable 1
+docker-compose.yml                stack local: App + PostgreSQL 16 + SonarQube
 ```
 
 ---
 
-## 🛠️ Tecnologias Utilizadas
-
-- **Java 21** (Amazon Corretto / Eclipse Temurin)
-- **Spring Boot 4.0.5** (Spring MVC, Spring Data JPA, Spring Security, Spring Actuator)
-- **PostgreSQL 16 & Flyway** (13 migrations versionadas gerenciando o schema `oficina`)
-- **JSON Web Tokens (JWT)** via `jjwt` (assinatura HMAC-SHA256 compartilhada)
-- **SpringDoc OpenAPI 3** (Swagger UI interativo)
-- **Docker** (Multi-stage build otimizado para `linux/amd64` com usuário não-root)
-- **Kubernetes 1.36 / Amazon EKS** (Deployment, LoadBalancer Service, HPA, ConfigMap, Secret, PDB)
-- **GitHub Actions** (CI com testes e JaCoCo + CD com deploy automatizado via `kubectl`)
-- **Observabilidade:** Spring Actuator (`/actuator/health`, `/actuator/prometheus`) e logs estruturados em JSON via `logback-spring.xml`.
-
----
-
-## 📂 Estrutura de Diretórios
+## Arquitetura
 
 ```
-tech-challenge-app/
-├── .github/workflows/
-│   ├── pr.yml                 # CI: Testes automatizados e verificação de cobertura (JaCoCo)
-│   └── deploy.yml             # CD: Build JAR, Push ECR e Deploy no EKS
-├── app/
-│   ├── src/main/java/...      # Código-fonte da aplicação (Clean Architecture / DDD)
-│   ├── src/main/resources/
-│   │   ├── application.properties
-│   │   ├── logback-spring.xml  # Logs em JSON para ambiente de nuvem
-│   │   └── db/migration/       # 13 migrations Flyway
-│   ├── src/test/java/...      # Testes unitários e de integração
-│   ├── build.gradle           # Configurações Gradle, plugins JaCoCo e SonarQube
-│   └── Dockerfile             # Multi-stage build otimizado para linux/amd64
-├── k8s/
-│   ├── configmap.yaml          # Configurações não-sensíveis da aplicação
-│   ├── secret.yaml.example     # Template de segredos (para referência)
-│   ├── deployment.yaml         # Deployment com Probes, Limits/Requests e Non-root user
-│   ├── service.yaml            # Service LoadBalancer (AWS NLB)
-│   ├── hpa.yaml                # Autoscaling horizontal (2 a 10 réplicas)
-│   └── pod-disruption-budget.yaml
-├── docker-compose.yml          # Execução local da stack completa (App + DB + Sonar)
-├── settings.gradle
-├── gradlew & gradlew.bat
-└── README.md
+                            ┌───────────────────────────────┐
+                            │       Amazon API Gateway      │
+                            └───────────────┬───────────────┘
+                                            │
+                       ┌────────────────────┴─────────────────────┐
+                       │ POST /auth                      /{proxy+}│
+                       ▼                                          ▼
+         ┌──────────────────────────┐          ┌──────────────────────────────┐
+         │   AWS Lambda (Auth CPF)  │          │  AWS Network Load Balancer   │
+         │   - Valida CPF           │          │  - porta 80                  │
+         │   - Emite JWT            │          └──────────────┬───────────────┘
+         └──────────────────────────┘                         │
+                                                              ▼
+                                          ┌───────────────────────────────────┐
+                                          │   Amazon EKS (ns: tech-challenge) │
+                                          │                                   │
+                                          │   Pods Spring Boot                │
+                                          │   - Valida JWT                    │
+                                          │   - Regras de negócio             │
+                                          │   - Actuator / Prometheus         │
+                                          │   - Migrations Flyway             │
+                                          │                                   │
+                                          │   HPA (CPU 70% / Memória 80%)     │
+                                          └──────────────────┬────────────────┘
+                                                             │
+                                          ┌──────────────────▼────────────────┐
+                                          │  Amazon RDS PostgreSQL 16         │
+                                          │  database: techchallenge          │
+                                          │  schema:   oficina                │
+                                          └───────────────────────────────────┘
 ```
 
 ---
 
-## ⚙️ Variáveis de Ambiente e Configurações
+## Pré-requisitos
 
-| Variável | Descrição | Valor Padrão (Local) |
-|---|---|---|
-| `SPRING_DATASOURCE_URL` / `DB_URL` | URL de conexão JDBC com o PostgreSQL | `jdbc:postgresql://localhost:5432/oficina` |
-| `SPRING_DATASOURCE_USERNAME` / `DB_USER` | Usuário do banco de dados | `postgres` |
-| `SPRING_DATASOURCE_PASSWORD` / `DB_PASSWORD` | Senha do banco de dados | `admin` |
-| `JWT_SECRET` | Chave secreta compartilhada (mínimo 32 caracteres) | `minha-chave-secreta-dev-minimo-32-chars!!` |
-| `JWT_ACCESS_EXP` | Tempo de expiração do token em segundos | `3600` (1 hora) |
-| `WEBHOOK_APROVACAO_SECRET` | Chave para validação de webhooks de transição | `webhook-secret-key-123` |
+- Java JDK 21
+- Docker
+- kubectl compatível com K8s 1.36 — necessário apenas para deploy manual
+- AWS CLI v2 — necessário apenas para deploy manual
+
+Para desenvolvimento local, somente Docker é necessário.
 
 ---
 
-## 🚀 Como Executar Localmente
+## Execução Local
 
-### Pré-requisitos
-- Docker e Docker Compose instalados
-- Java 21 (opcional, caso queira rodar fora do Docker)
+### Docker Compose
 
-### Opção 1: Via Docker Compose (Recomendado)
-Para subir o banco PostgreSQL e a aplicação compilada:
+Sobe o PostgreSQL 16 e a aplicação compilada via `Dockerfile`:
+
 ```bash
 docker compose up --build -d
 ```
 
-A aplicação estará disponível em `http://localhost:8080`.
+A API fica disponível em `http://localhost:8080`.
 
-### Opção 2: Via Gradle (Desenvolvimento)
-Suba apenas o banco de dados:
+Para incluir o SonarQube na stack (porta 9000):
+
 ```bash
-docker compose up -d db
+docker compose --profile tools up -d
 ```
 
-Execute a aplicação:
+### Gradle
+
+Sobe apenas o banco e executa a aplicação com hot-reload:
+
 ```bash
+docker compose up -d db
 ./gradlew bootRun
 ```
 
-### Executar Testes Automatizados e Cobertura
+---
+
+## Testes e Cobertura
+
 ```bash
 ./gradlew test jacocoTestReport jacocoTestCoverageVerification
 ```
-O relatório HTML de cobertura é gerado em: `app/build/reports/jacoco/test/html/index.html`.
+
+Relatório HTML gerado em `app/build/reports/jacoco/test/html/index.html`. A build falha se a cobertura de linhas ficar abaixo de 80%.
 
 ---
 
-## ☸️ Deploy no Amazon EKS (Kubernetes)
+## Build da Imagem Docker
 
-O deploy é **100% automatizado** via GitHub Actions ao realizar push na branch `main`.
-
-Caso deseje aplicar os manifestos manualmente via terminal:
 ```bash
-# 1. Configurar o contexto do kubectl para o cluster EKS
-aws eks update-kubeconfig --region us-east-1 --name tech-challenge
-
-# 2. Criar os segredos no namespace tech-challenge
-kubectl create secret generic app-secrets \
-  --namespace=tech-challenge \
-  --from-literal=SPRING_DATASOURCE_URL="jdbc:postgresql://<RDS_ENDPOINT>/tech_challenge" \
-  --from-literal=SPRING_DATASOURCE_USERNAME="<DB_USER>" \
-  --from-literal=SPRING_DATASOURCE_PASSWORD="<DB_PASSWORD>" \
-  --from-literal=JWT_SECRET="<JWT_SECRET>" \
-  --from-literal=WEBHOOK_APROVACAO_SECRET="<WEBHOOK_SECRET>" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Aplicar os manifestos
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/service.yaml
-kubectl apply -f k8s/hpa.yaml
-kubectl apply -f k8s/pod-disruption-budget.yaml
-
-# 4. Acompanhar o rollout
-kubectl rollout status deployment/tech-challenge-app -n tech-challenge
+docker build --platform linux/amd64 -t tech-challenge-app:local -f app/Dockerfile .
 ```
 
----
-
-## 🔄 CI/CD (GitHub Actions)
-
-### Secrets Necessários no GitHub Repository:
-Para o funcionamento correto da pipeline no GitHub Actions (`Settings` > `Secrets and variables` > `Actions`):
-
-- `AWS_ACCESS_KEY_ID`: Chave de acesso AWS (Learner Lab).
-- `AWS_SECRET_ACCESS_KEY`: Chave secreta AWS.
-- `AWS_SESSION_TOKEN`: Token de sessão AWS (obrigatório para contas Learner Lab).
-- `DB_URL`: JDBC URL do Amazon RDS (ex: `jdbc:postgresql://tech-challenge-db...us-east-1.rds.amazonaws.com:5432/tech_challenge`).
-- `DB_USER`: Usuário do RDS.
-- `DB_PASSWORD`: Senha do RDS.
-- `JWT_SECRET`: Mesma chave utilizada na Lambda Serverless.
-- `WEBHOOK_APROVACAO_SECRET`: Chave do webhook.
+O flag `--platform linux/amd64` é obrigatório. Os nós do cluster EKS utilizam `AL2023_x86_64_STANDARD`; uma imagem ARM64 causará `ImagePullBackOff` no deploy.
 
 ---
 
-## 📖 Documentação da API (Swagger / OpenAPI)
+## Variáveis de Ambiente
 
-Com a aplicação rodando (localmente ou na nuvem):
+| Variável | Padrão (dev local) | Descrição |
+|---|---|---|
+| `SPRING_DATASOURCE_URL` / `DB_URL` | `jdbc:postgresql://localhost:5432/techchallenge` | URL JDBC de conexão com o banco |
+| `SPRING_DATASOURCE_USERNAME` / `DB_USER` | `postgres` | Usuário do banco |
+| `SPRING_DATASOURCE_PASSWORD` / `DB_PASSWORD` | `admin` | Senha do banco |
+| `JWT_SECRET` | `minha-chave-secreta-dev-minimo-32-chars!!` | Chave de assinatura dos tokens JWT (mín. 32 caracteres) |
+| `JWT_ACCESS_EXP` | `3600` | Validade do token em segundos |
+| `WEBHOOK_APROVACAO_SECRET` | `webhook-secret-key-123` | Chave de validação dos webhooks de transição de OS |
 
-- **Swagger UI:** `http://<HOST>:8080/swagger-ui/index.html` (ou `/swagger-ui.html`)
-- **OpenAPI JSON:** `http://<HOST>:8080/v3/api-docs`
+Em produção, essas variáveis são injetadas pelo Kubernetes Secret `app-secrets`, criado automaticamente pela pipeline `deploy.yml`.
 
 ---
 
-## 🛡️ Qualidade de Código e Segurança
+## CI/CD (GitHub Actions)
 
-### SonarQube Local
-Para rodar análise de código estático localmente:
+| Workflow | Disparo | O que faz |
+|---|---|---|
+| `pr.yml` | Pull Request para `main` | Compila, executa testes, verifica cobertura JaCoCo e valida o build da imagem Docker |
+| `deploy.yml` | Push na `main` ou disparo manual | Autentica na AWS, publica a imagem no ECR, configura o kubectl e aplica os manifestos no EKS |
+
+### Secrets do repositório
+
+| Secret | Descrição |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Credencial AWS |
+| `AWS_SECRET_ACCESS_KEY` | Credencial AWS |
+| `AWS_SESSION_TOKEN` | Token de sessão temporário (AWS Academy Learner Lab) |
+| `DB_URL` | String JDBC do RDS (`jdbc:postgresql://<host>:5432/techchallenge`) |
+| `DB_USER` | Usuário master do banco |
+| `DB_PASSWORD` | Senha do banco |
+| `JWT_SECRET` | Chave de assinatura dos tokens JWT (mínimo 32 caracteres) |
+| `WEBHOOK_APROVACAO_SECRET` | Chave de validação dos webhooks de transição de ordem de serviço |
+
+---
+
+## Documentação da API
+
+Com a aplicação em execução:
+
+- Swagger UI: `http://<HOST>/swagger-ui/index.html`
+- OpenAPI JSON: `http://<HOST>/v3/api-docs`
+- Health: `http://<HOST>/actuator/health`
+- Métricas Prometheus: `http://<HOST>/actuator/prometheus`
+
+---
+
+## Análise de Código e Segurança
+
+### SonarQube
+
 ```bash
 docker compose --profile tools up -d sonarqube
-./gradlew test jacocoTestReport sonar -Dsonar.token=<SEU_TOKEN_SONAR>
+# Acesse http://localhost:9000, gere um token e execute:
+./gradlew test jacocoTestReport sonar -Dsonar.token=<TOKEN>
 ```
 
-### OWASP ZAP (Análise Dinâmica de Segurança - DAST)
-Para executar o scan de vulnerabilidades nas rotas da API:
+### OWASP ZAP
+
 ```bash
-# 1. Obter o token JWT de autenticação
+# Obter token JWT
 TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"login":"gerente","senha":"senha@123"}' | jq -r .accessToken)
 
-# 2. Executar o scan do OWASP ZAP
+# Executar scan na especificação OpenAPI
 mkdir -p reports
-docker run --rm -v "$(pwd)/reports:/zap/wrk/:rw" -t zaproxy/zap-stable zap-api-scan.py \
+docker run --rm -v "$(pwd)/reports:/zap/wrk/:rw" zaproxy/zap-stable zap-api-scan.py \
   -t http://host.docker.internal:8080/v3/api-docs \
   -f openapi \
   -r zap-report.html \
-  -z "-config replacer.full_list(0).description=auth -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=Authorization -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=\"Bearer $TOKEN\""
+  -z "-config replacer.full_list(0).matchtype=REQ_HEADER \
+      -config replacer.full_list(0).matchstr=Authorization \
+      -config replacer.full_list(0).replacement=\"Bearer $TOKEN\""
 ```
+
 O relatório é gerado em `reports/zap-report.html`.
