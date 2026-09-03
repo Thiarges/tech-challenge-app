@@ -7,6 +7,7 @@ import com.fiap.techchallenge.os.adapter.controller.dto.CreateOrdemDeServicoRequ
 import com.fiap.techchallenge.os.adapter.controller.dto.UpdateOrdemDeServicoRequest;
 import com.fiap.techchallenge.os.domain.OrdemDeServico;
 import com.fiap.techchallenge.os.domain.StatusOrdemDeServico;
+import com.fiap.techchallenge.os.observabilidade.OrdemDeServicoEventLogger;
 import com.fiap.techchallenge.exception.BadRequestException;
 import com.fiap.techchallenge.os.inputdata.AdicionarPecaItemInputData;
 import com.fiap.techchallenge.peca.domain.Peca;
@@ -20,12 +21,17 @@ import com.fiap.techchallenge.servico.usecase.gateway.TipoServicoGateway;
 import com.fiap.techchallenge.veiculo.domain.Veiculo;
 import com.fiap.techchallenge.veiculo.usecase.VeiculoGateway;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -55,6 +61,15 @@ public class OrdemDeServicoInteractorTest {
 
     @Mock
     private ServicoUseCase servicoUseCase;
+
+    @Mock
+    private OrdemDeServicoEventLogger eventLogger;
+
+    @Mock
+    private HistoricoStatusOrdemDeServicoGateway historicoStatusOrdemDeServicoGateway;
+
+    @Spy
+    private Clock clock = Clock.fixed(Instant.parse("2026-08-29T12:00:00Z"), ZoneOffset.UTC);
 
     @InjectMocks
     private OrdemDeServicoInteractor osUseCase;
@@ -89,6 +104,12 @@ public class OrdemDeServicoInteractorTest {
 
     private TipoServico criarTipoServico(Long id, BigDecimal valor) {
         return new TipoServico(id, "Alinhamento", valor);
+    }
+
+    @BeforeEach
+    void configurarHistoricoDeStatus() {
+        lenient().when(historicoStatusOrdemDeServicoGateway.buscarInicioDoStatusAtual(anyLong()))
+                .thenReturn(Optional.of(Instant.parse("2026-08-29T11:00:00Z")));
     }
 
     // #################### getAllOrdemDeServico() ####################
@@ -207,6 +228,8 @@ public class OrdemDeServicoInteractorTest {
         assertNotNull(resultado);
         assertEquals(1L, resultado.getId());
         assertEquals("Problema nos freios.", resultado.getSolicitacao());
+        verify(historicoStatusOrdemDeServicoGateway).registrarStatus(1L, StatusOrdemDeServico.RECEBIDA, Instant.parse("2026-08-29T12:00:00Z"));
+        verify(eventLogger).registrarOrdemCriada(1L, StatusOrdemDeServico.RECEBIDA, Instant.parse("2026-08-29T12:00:00Z"));
     }
 
     @Test
@@ -220,6 +243,7 @@ public class OrdemDeServicoInteractorTest {
 
         assertThrows(BadRequestException.class, () -> osUseCase.createOrdemDeServico(request.getSolicitacao(), request.getIdCliente(), request.getIdVeiculo(), null, null));
         verify(osGateway, never()).saveOrdemDeServico(any());
+        verify(eventLogger).registrarFalhaProcessamento(null, "creation", "BUSINESS_RULE_VIOLATION", Instant.parse("2026-08-29T12:00:00Z"), false);
     }
 
     @Test
@@ -236,6 +260,22 @@ public class OrdemDeServicoInteractorTest {
 
         assertThrows(BadRequestException.class, () -> osUseCase.createOrdemDeServico(request.getSolicitacao(), request.getIdCliente(), request.getIdVeiculo(), null, null));
         verify(osGateway, never()).saveOrdemDeServico(any());
+    }
+
+    @Test
+    public void given_persistenceFailure_when_criaOrdem_then_emiteEventoTecnicoERelancaExcecao() {
+        var cliente = new Cliente();
+        cliente.setId(456L);
+        var veiculo = new Veiculo();
+        veiculo.setId(123L);
+        when(clienteGateway.findById(456L)).thenReturn(Optional.of(cliente));
+        when(veiculoGateway.findById(123L)).thenReturn(Optional.of(veiculo));
+        when(osGateway.saveOrdemDeServico(any())).thenThrow(new IllegalStateException("database unavailable"));
+
+        assertThrows(IllegalStateException.class,
+                () -> osUseCase.createOrdemDeServico("Problema nos freios.", 456L, 123L, null, null));
+
+        verify(eventLogger).registrarFalhaProcessamento(null, "creation", "UNEXPECTED_ERROR", Instant.parse("2026-08-29T12:00:00Z"), true);
     }
 
     // #################### updateOrdemDeServico(Long id, UpdateOrdemDeServicoRequest) ####################
@@ -269,6 +309,9 @@ public class OrdemDeServicoInteractorTest {
 
         assertNotNull(resultado);
         verify(osGateway).updateOrdemDeServico(any());
+        verify(eventLogger).registrarStatusAlterado(1L, StatusOrdemDeServico.RECEBIDA, StatusOrdemDeServico.EM_DIAGNOSTICO,
+                3_600_000L, Instant.parse("2026-08-29T12:00:00Z"));
+        verify(historicoStatusOrdemDeServicoGateway).registrarStatus(1L, StatusOrdemDeServico.EM_DIAGNOSTICO, Instant.parse("2026-08-29T12:00:00Z"));
     }
 
     @Test
@@ -281,6 +324,7 @@ public class OrdemDeServicoInteractorTest {
 
         assertThrows(BadRequestException.class, () -> osUseCase.updateOrdemDeServico(1L, request.getOrcamento(), request.getStatus().toString()));
         verify(osGateway, never()).saveOrdemDeServico(any());
+        verify(eventLogger).registrarFalhaProcessamento(1L, "status_transition", "INVALID_STATUS_TRANSITION", Instant.parse("2026-08-29T12:00:00Z"), false);
     }
 
     @Test
@@ -329,6 +373,9 @@ public class OrdemDeServicoInteractorTest {
         assertTrue(resultado.isSucesso());
         assertTrue(resultado.getMensagem().contains("EM_DIAGNOSTICO"));
         verify(osGateway).updateOrdemDeServico(any());
+        verify(historicoStatusOrdemDeServicoGateway).registrarStatus(1L, StatusOrdemDeServico.EM_DIAGNOSTICO, Instant.parse("2026-08-29T12:00:00Z"));
+        verify(eventLogger).registrarStatusAlterado(1L, StatusOrdemDeServico.RECEBIDA, StatusOrdemDeServico.EM_DIAGNOSTICO,
+                3_600_000L, Instant.parse("2026-08-29T12:00:00Z"));
     }
 
     @Test
@@ -433,6 +480,7 @@ public class OrdemDeServicoInteractorTest {
 
         assertFalse(resultado.isSucesso());
         verify(osGateway, never()).updateOrdemDeServico(any());
+        verify(eventLogger).registrarFalhaProcessamento(1L, "status_transition", "INVALID_STATUS_TRANSITION", Instant.parse("2026-08-29T12:00:00Z"), false);
     }
 
     @Test
@@ -456,6 +504,7 @@ public class OrdemDeServicoInteractorTest {
         assertFalse(resultado.isSucesso());
         assertTrue(resultado.getMensagem().contains("não existe"));
         verify(osGateway, never()).updateOrdemDeServico(any());
+        verify(eventLogger).registrarFalhaProcessamento(1L, "status_transition", "ORDER_NOT_FOUND", Instant.parse("2026-08-29T12:00:00Z"), false);
     }
 
     // #################### adicionarServicosNaOrdemDeServico(Long, List<Long>) ####################

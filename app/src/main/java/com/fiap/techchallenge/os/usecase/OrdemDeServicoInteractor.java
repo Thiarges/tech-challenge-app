@@ -6,6 +6,7 @@ import com.fiap.techchallenge.os.adapter.controller.dto.TransicaoDeStatusDTO;
 import com.fiap.techchallenge.exception.BadRequestException;
 import com.fiap.techchallenge.os.domain.OrdemDeServico;
 import com.fiap.techchallenge.os.domain.StatusOrdemDeServico;
+import com.fiap.techchallenge.os.observabilidade.OrdemDeServicoEventLogger;
 import com.fiap.techchallenge.os.inputdata.AdicionarPecaItemInputData;
 import com.fiap.techchallenge.peca.domain.Peca;
 import com.fiap.techchallenge.peca.domain.TipoPeca;
@@ -23,7 +24,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -39,19 +44,27 @@ public class OrdemDeServicoInteractor implements OrdemDeServicoUseCase {
     private final TipoServicoGateway tipoServicoGateway;
     private final TipoPecaGateway tipoPecaGateway;
     private final ServicoUseCase servicoUseCase;
+    private final HistoricoStatusOrdemDeServicoGateway historicoStatusOrdemDeServicoGateway;
+    private final OrdemDeServicoEventLogger loggerEventos;
+    private final Clock clock;
 
     @Autowired
     public OrdemDeServicoInteractor(
             OrdemDeServicoGateway osGateway,
             TipoPecaGateway tipoPecaGateway,
             ClienteGateway clienteGateway, VeiculoGateway veiculoGateway,
-            TipoServicoGateway tipoServicoGateway, ServicoUseCase servicoUseCase) {
+            TipoServicoGateway tipoServicoGateway, ServicoUseCase servicoUseCase,
+            HistoricoStatusOrdemDeServicoGateway historicoStatusOrdemDeServicoGateway,
+            OrdemDeServicoEventLogger loggerEventos, Clock clock) {
         this.osGateway = osGateway;
         this.clienteGateway = clienteGateway;
         this.veiculoGateway = veiculoGateway;
         this.tipoPecaGateway = tipoPecaGateway;
         this.tipoServicoGateway = tipoServicoGateway;
         this.servicoUseCase = servicoUseCase;
+        this.historicoStatusOrdemDeServicoGateway = historicoStatusOrdemDeServicoGateway;
+        this.loggerEventos = loggerEventos;
+        this.clock = clock;
     }
 
     // ###########################################################################################
@@ -81,67 +94,89 @@ public class OrdemDeServicoInteractor implements OrdemDeServicoUseCase {
     @Transactional
     @Override
     public OrdemDeServico createOrdemDeServico(String solicitacao, Long idCliente, Long idVeiculo, List<AdicionarPecaItemInputData> adicionarPecaItemInputData, List<Long> adicionarServicos) {
-        Optional<Cliente> cOpt = this.clienteGateway.findById(idCliente);
-        Optional<Veiculo> vOpt = this.veiculoGateway.findById(idVeiculo);
+        try {
+            Optional<Cliente> cOpt = this.clienteGateway.findById(idCliente);
+            Optional<Veiculo> vOpt = this.veiculoGateway.findById(idVeiculo);
 
-        if (cOpt.isEmpty()) {
-            String message = "Erro: Cliente '%d' não existe!".formatted(idCliente);
-            log.error(message);
-            throw new BadRequestException(message);
+            if (cOpt.isEmpty()) {
+                throw new BadRequestException("Erro: Cliente '%d' não existe!".formatted(idCliente));
+            }
+
+            if (vOpt.isEmpty()) {
+                throw new BadRequestException("Erro: Veículo '%d' não existe!".formatted(idVeiculo));
+            }
+
+            Instant ocorreuEm = clock.instant();
+            OrdemDeServico novaOs = new OrdemDeServico();
+            novaOs.setSolicitacao(solicitacao);
+            novaOs.setOrcamento(BigDecimal.valueOf(0L, 2));
+            novaOs.setDataHoraCriacao(LocalDateTime.ofInstant(ocorreuEm, ZoneOffset.UTC));
+            novaOs.setCliente(cOpt.get());
+            novaOs.setVeiculo(vOpt.get());
+            novaOs.setStatus(StatusOrdemDeServico.RECEBIDA);
+
+            novaOs = this.osGateway.saveOrdemDeServico(novaOs);
+            historicoStatusOrdemDeServicoGateway.registrarStatus(novaOs.getId(), StatusOrdemDeServico.RECEBIDA, ocorreuEm);
+
+            if (adicionarPecaItemInputData != null && !adicionarPecaItemInputData.isEmpty()) {
+                novaOs = adicionarPecasNaOrdemDeServico(novaOs, adicionarPecaItemInputData);
+            }
+
+            if (adicionarServicos != null && !adicionarServicos.isEmpty()) {
+                novaOs = adicionarServicosNaOrdemDeServico(novaOs, adicionarServicos);
+            }
+
+            loggerEventos.registrarOrdemCriada(novaOs.getId(), novaOs.getStatus(), ocorreuEm);
+            return novaOs;
+        } catch (BadRequestException ex) {
+            loggerEventos.registrarFalhaProcessamento(null, "creation", "BUSINESS_RULE_VIOLATION", clock.instant(), false);
+            throw ex;
+        } catch (RuntimeException ex) {
+            loggerEventos.registrarFalhaProcessamento(null, "creation", "UNEXPECTED_ERROR", clock.instant(), true);
+            throw ex;
         }
-
-        if (vOpt.isEmpty()) {
-            String message = "Erro: Veículo '%d' não existe!".formatted(idVeiculo);
-            log.error(message);
-            throw new BadRequestException(message);
-        }
-
-        OrdemDeServico novaOs = new OrdemDeServico();
-        novaOs.setSolicitacao(solicitacao);
-        novaOs.setOrcamento(BigDecimal.valueOf(0L, 2));
-        novaOs.setDataHoraCriacao(LocalDateTime.now());
-        novaOs.setCliente(cOpt.get());
-        novaOs.setVeiculo(vOpt.get());
-        novaOs.setStatus(StatusOrdemDeServico.RECEBIDA);
-
-        novaOs = this.osGateway.saveOrdemDeServico(novaOs);
-
-        if (adicionarPecaItemInputData != null && !adicionarPecaItemInputData.isEmpty()) {
-            novaOs = adicionarPecasNaOrdemDeServico(novaOs, adicionarPecaItemInputData);
-        }
-
-        if (adicionarServicos != null && !adicionarServicos.isEmpty()) {
-            novaOs = adicionarServicosNaOrdemDeServico(novaOs, adicionarServicos);
-        }
-
-        log.info("Ordem de Servico {} criada com sucesso!", novaOs.getId());
-
-        return novaOs;
     }
 
     @Override
+    @Transactional
     public OrdemDeServico updateOrdemDeServico(Long id, BigDecimal orcamento, String status) {
-        Optional<OrdemDeServico> osAtualOpt = this.osGateway.findOrdemDeServicoById(id);
+        try {
+            Optional<OrdemDeServico> osAtualOpt = this.osGateway.findOrdemDeServicoById(id);
 
-        if (osAtualOpt.isPresent()) {
-            var osEditada = osAtualOpt.get();
-            if (orcamento != null) osEditada.setOrcamento(orcamento);
-            if (status != null) {
-                StatusOrdemDeServico statusEnum = StatusOrdemDeServico.valueOf(status);
-                if (osEditada.podeTransicionarParaStatus(statusEnum).permitida()) {
-                    osEditada.setStatus(statusEnum);
-                } else {
-                    throw new BadRequestException("Erro! A alteração de status é inválida!");
+            if (osAtualOpt.isPresent()) {
+                var osEditada = osAtualOpt.get();
+                if (orcamento != null) osEditada.setOrcamento(orcamento);
+                if (status != null) {
+                    StatusOrdemDeServico statusEnum = StatusOrdemDeServico.valueOf(status);
+                    if (osEditada.podeTransicionarParaStatus(statusEnum).permitida()) {
+                        StatusOrdemDeServico statusAnterior = osEditada.getStatus();
+                        Instant ocorreuEm = clock.instant();
+                        long duracaoNoStatusAtual = calcularDuracaoNoStatusAtual(id, ocorreuEm);
+                        osEditada.setStatus(statusEnum);
+                        osEditada = this.osGateway.updateOrdemDeServico(osEditada);
+                        historicoStatusOrdemDeServicoGateway.registrarStatus(id, statusEnum, ocorreuEm);
+                        loggerEventos.registrarStatusAlterado(osEditada.getId(), statusAnterior, statusEnum, duracaoNoStatusAtual, ocorreuEm);
+                    } else {
+                        loggerEventos.registrarFalhaProcessamento(id, "status_transition", "INVALID_STATUS_TRANSITION", clock.instant(), false);
+                        throw new BadRequestException("Erro! A alteração de status é inválida!");
+                    }
                 }
+
+                if (status == null) {
+                    osEditada = this.osGateway.updateOrdemDeServico(osEditada);
+                }
+
+                return osEditada;
             }
 
-            osEditada = this.osGateway.updateOrdemDeServico(osEditada);
-
-            return osEditada;
-        } else {
             String message = getMensagemOsNaoExiste(id);
-            log.error(message);
+            loggerEventos.registrarFalhaProcessamento(id, "status_transition", "ORDER_NOT_FOUND", clock.instant(), false);
             throw new BadRequestException(message);
+        } catch (BadRequestException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            loggerEventos.registrarFalhaProcessamento(id, "status_transition", "UNEXPECTED_ERROR", clock.instant(), true);
+            throw ex;
         }
     }
 
@@ -167,25 +202,40 @@ public class OrdemDeServicoInteractor implements OrdemDeServicoUseCase {
     @Override
     @Transactional
     public TransicaoDeStatusDTO mudarParaStatus(Long id, String novoStatus) {
-        OrdemDeServico os = this.osGateway.findOrdemDeServicoById(id).orElse(null);
-        StatusOrdemDeServico novoStatusEnum = StatusOrdemDeServico.valueOf(novoStatus);
+        try {
+            OrdemDeServico os = this.osGateway.findOrdemDeServicoById(id).orElse(null);
+            StatusOrdemDeServico novoStatusEnum = StatusOrdemDeServico.valueOf(novoStatus);
 
-        if (os != null) {
-            OrdemDeServico.ValidacaoTransicaoDeStatus validacao = os.podeTransicionarParaStatus(novoStatusEnum);
-            if (validacao.permitida()) {
-                os.setStatus(novoStatusEnum);
-                this.osGateway.updateOrdemDeServico(os);
-                return executarOperacoesParaTransicao(os, novoStatusEnum);
-            } else if (os.getStatus().equals(novoStatusEnum)) {
-                String erro = "Erro: A Ordem de Serviço %d já está no status '%s'!".formatted(os.getId(), novoStatusEnum);
-                log.error(erro);
-                return new TransicaoDeStatusDTO(false, erro);
-            } else {
-                log.error(validacao.erroDeValidacao());
+            if (os != null) {
+                OrdemDeServico.ValidacaoTransicaoDeStatus validacao = os.podeTransicionarParaStatus(novoStatusEnum);
+                if (validacao.permitida()) {
+                    StatusOrdemDeServico statusAnterior = os.getStatus();
+                    Instant ocorreuEm = clock.instant();
+                    long duracaoNoStatusAtual = calcularDuracaoNoStatusAtual(id, ocorreuEm);
+                    os.setStatus(novoStatusEnum);
+                    this.osGateway.updateOrdemDeServico(os);
+                    historicoStatusOrdemDeServicoGateway.registrarStatus(id, novoStatusEnum, ocorreuEm);
+                    TransicaoDeStatusDTO resultado = executarOperacoesParaTransicao(os, novoStatusEnum);
+                    loggerEventos.registrarStatusAlterado(os.getId(), statusAnterior, novoStatusEnum, duracaoNoStatusAtual, ocorreuEm);
+                    return resultado;
+                }
+
+                if (os.getStatus().equals(novoStatusEnum)) {
+                    String erro = "Erro: A Ordem de Serviço %d já está no status '%s'!".formatted(os.getId(), novoStatusEnum);
+                    loggerEventos.registrarFalhaProcessamento(id, "status_transition", "STATUS_ALREADY_SET", clock.instant(), false);
+                    return new TransicaoDeStatusDTO(false, erro);
+                }
+
+                loggerEventos.registrarFalhaProcessamento(id, "status_transition", "INVALID_STATUS_TRANSITION", clock.instant(), false);
                 return new TransicaoDeStatusDTO(false, validacao.erroDeValidacao());
             }
+
+            loggerEventos.registrarFalhaProcessamento(id, "status_transition", "ORDER_NOT_FOUND", clock.instant(), false);
+            return new TransicaoDeStatusDTO(false, getMensagemOsNaoExiste(id));
+        } catch (RuntimeException ex) {
+            loggerEventos.registrarFalhaProcessamento(id, "status_transition", "UNEXPECTED_ERROR", clock.instant(), true);
+            throw ex;
         }
-        return new TransicaoDeStatusDTO(false, getMensagemOsNaoExiste(id));
     }
 
     private TransicaoDeStatusDTO executarOperacoesParaTransicao(OrdemDeServico os, StatusOrdemDeServico novoStatus) {
@@ -452,5 +502,11 @@ public class OrdemDeServicoInteractor implements OrdemDeServicoUseCase {
 
     private String getMensagemOsNaoExiste(Long id) {
         return OS_NAO_EXISTE_MSG_TEMPLATE.formatted(id);
+    }
+
+    private long calcularDuracaoNoStatusAtual(Long idOrdemDeServico, Instant ocorreuEm) {
+        Instant inicioDoStatusAtual = historicoStatusOrdemDeServicoGateway.buscarInicioDoStatusAtual(idOrdemDeServico)
+                .orElseThrow(() -> new IllegalStateException("Status history is missing for service order"));
+        return Duration.between(inicioDoStatusAtual, ocorreuEm).toMillis();
     }
 }
