@@ -97,11 +97,36 @@ jobs:
           kubectl apply -f k8s/hpa.yaml
           kubectl apply -f k8s/pod-disruption-budget.yaml
 
+      - name: Recriar Pods em deploy manual
+        if: github.event_name == 'workflow_dispatch'
+        run: kubectl rollout restart deployment/tech-challenge-app -n ${{ env.NAMESPACE }}
+
       - name: Verificar Rollout do Deployment
         run: |
           kubectl rollout status deployment/tech-challenge-app \
             -n ${{ env.NAMESPACE }} \
             --timeout=300s
+
+      - name: Validar auto-attach do New Relic
+        run: |
+          expected_init_container="nri-java--tech-challenge-app"
+          pod_names="$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=tech-challenge-app -o jsonpath='{.items[*].metadata.name}')"
+
+          if [ -z "$pod_names" ]; then
+            echo "::error::Nenhum Pod da aplicação foi encontrado para validar o auto-attach do New Relic."
+            exit 1
+          fi
+
+          for pod in $pod_names; do
+            init_containers="$(kubectl get pod "$pod" -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.initContainers[*].name}')"
+            case " $init_containers " in
+              *" $expected_init_container "*) ;;
+              *)
+                echo "::error::O Pod $pod não contém o init container $expected_init_container."
+                exit 1
+                ;;
+            esac
+          done
 
       - name: Exibir Endpoint do Load Balancer
         run: |
