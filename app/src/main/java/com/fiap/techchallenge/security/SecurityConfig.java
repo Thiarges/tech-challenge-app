@@ -71,6 +71,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/login").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers("/error").permitAll()
 
                         // Criação de usuário requer GERENTE
                         .requestMatchers(HttpMethod.POST, "/api/auth/usuario").hasRole("GERENTE")

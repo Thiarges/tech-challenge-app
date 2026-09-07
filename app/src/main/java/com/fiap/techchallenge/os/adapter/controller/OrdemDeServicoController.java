@@ -27,7 +27,7 @@ import java.util.Collections;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/ordemDeServico/")
+@RequestMapping({ "/api/ordemDeServico", "/api/ordemDeServico/" })
 @Tag(name = "Ordens de Serviço", description = "Operações de criação, acompanhamento e transição de status das ordens de serviço")
 public class OrdemDeServicoController {
 

@@ -18,7 +18,7 @@ import java.net.URI;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/peca/")
+@RequestMapping({ "/api/peca", "/api/peca/" })
 @Tag(name = "Peças", description = "Operações de cadastro e manutenção de peças associadas à ordem de serviço")
 public class PecaController {
 

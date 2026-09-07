@@ -77,6 +77,11 @@ spec:
                 configMapKeyRef:
                   name: app-config
                   key: SPRING_FLYWAY_SCHEMAS
+            - name: SWAGGER_BASE_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: SWAGGER_BASE_PATH
           startupProbe:
             httpGet:
               path: /actuator/health
