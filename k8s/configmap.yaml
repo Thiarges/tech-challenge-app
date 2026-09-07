@@ -8,3 +8,4 @@ data:
   SPRING_JPA_SHOW_SQL: "false"
   SPRING_FLYWAY_ENABLED: "true"
   SPRING_FLYWAY_SCHEMAS: "oficina"
+  SWAGGER_BASE_PATH: "/Prod"
