@@ -45,6 +45,13 @@ k8s/
 ├── service.yaml                  Service LoadBalancer — AWS NLB, porta 80 → 8080
 ├── hpa.yaml                      HPA: 2 a 10 réplicas (CPU 70%, memória 80%)
 └── pod-disruption-budget.yaml    PDB: minAvailable 1
+postman/
+├── Tech Challenge Fase 3 - Clientes.postman_collection.json
+├── Tech Challenge Fase 3 - Veiculo.postman_collection.json
+├── Tech Challenge Fase 3 - Peca e TipoPeca.postman_collection.json
+├── Tech Challenge Fase 3 - Servico e TipoServico.postman_collection.json
+├── Tech Challenge Fase 3 - Ordem de Servico.postman_collection.json
+└── TechChallenge-Fase3.postman_environment.json
 docker-compose.yml                stack local: App + PostgreSQL 16 + SonarQube
 ```
 
@@ -192,6 +199,126 @@ Com a aplicação em execução:
 - OpenAPI JSON: `http://<HOST>/v3/api-docs`
 - Health: `http://<HOST>/actuator/health`
 - Métricas Prometheus: `http://<HOST>/actuator/prometheus`
+- **Postman Collections:** Coleções completas e arquivo de environment disponíveis na pasta `postman/` (com suporte à autenticação serverless via CPF e chave `baseUrl` centralizada).
+
+---
+
+## Exemplos de Uso da API
+
+As requisições abaixo demonstram o fluxo padrão de operação do sistema. Todas as rotas de negócio requerem o token JWT no cabeçalho `Authorization: Bearer <TOKEN>`, obtido via autenticação de cliente no módulo serverless (`POST /auth` com `{"cpf": "..."}`) ou usuário interno (`POST /api/auth/login`).
+
+### 1. Cadastro e Consulta de Cliente
+
+Cadastra um novo cliente na oficina e realiza a busca por documento.
+
+* **Requisição de Criação (`POST /api/cliente`):**
+  ```http
+  POST /api/cliente
+  Content-Type: application/json
+  Authorization: Bearer <TOKEN>
+
+  {
+    "nome": "Carlos Silva",
+    "tipoPessoa": "FISICA",
+    "documento": "52998224725",
+    "dataNascimento": "1990-01-15",
+    "email": "carlos.silva@exemplo.com"
+  }
+  ```
+
+* **Resposta (`201 Created`):**
+  ```http
+  Location: /api/cliente/1
+  ```
+
+* **Consulta por Documento (`GET /api/cliente?documento=52998224725`):**
+  ```json
+  [
+    {
+      "id": 1,
+      "nome": "Carlos Silva",
+      "tipoPessoa": "FISICA",
+      "documento": "52998224725",
+      "dataNascimento": "1990-01-15",
+      "email": "carlos.silva@exemplo.com"
+    }
+  ]
+  ```
+
+---
+
+### 2. Abertura de Ordem de Serviço
+
+Cria uma nova ordem de serviço vinculada ao cliente e ao veículo.
+
+* **Requisição (`POST /api/ordemDeServico`):**
+  ```http
+  POST /api/ordemDeServico
+  Content-Type: application/json
+  Authorization: Bearer <TOKEN>
+
+  {
+    "solicitacao": "Troca de pastilhas de freio dianteiras e alinhamento",
+    "idCliente": 1,
+    "idVeiculo": 1,
+    "pecas": [],
+    "servicos": []
+  }
+  ```
+
+* **Resposta (`201 Created`):**
+  ```json
+  {
+    "id": 1,
+    "solicitacao": "Troca de pastilhas de freio dianteiras e alinhamento",
+    "status": "RECEBIDA",
+    "orcamento": 0.0,
+    "cliente": {
+      "id": 1,
+      "nome": "Carlos Silva",
+      "documento": "52998224725"
+    },
+    "veiculo": {
+      "id": 1,
+      "placa": "ABC1D23",
+      "modelo": "Civic"
+    },
+    "itensPeca": [],
+    "itensServico": []
+  }
+  ```
+
+---
+
+### 3. Consulta de Ordens de Serviço por Cliente
+
+Lista o histórico e o status de todas as ordens de serviço de um cliente específico.
+
+* **Requisição (`GET /api/ordemDeServico/cliente/1/ordens`):**
+  ```http
+  GET /api/ordemDeServico/cliente/1/ordens
+  Authorization: Bearer <TOKEN>
+  ```
+
+* **Resposta (`200 OK`):**
+  ```json
+  [
+    {
+      "id": 1,
+      "solicitacao": "Troca de pastilhas de freio dianteiras e alinhamento",
+      "status": "RECEBIDA",
+      "orcamento": 0.0,
+      "cliente": {
+        "id": 1,
+        "nome": "Carlos Silva"
+      },
+      "veiculo": {
+        "id": 1,
+        "placa": "ABC1D23"
+      }
+    }
+  ]
+  ```
 
 ---
 
